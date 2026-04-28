@@ -31,7 +31,7 @@ SECTOR_STOCKS = {
 
 def send_telegram_message(message):
     if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram 설정 없음: .env에 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID를 넣으세요.")
+        print("Telegram 설정 없음: .env 확인 필요")
         return
 
     url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
@@ -205,12 +205,22 @@ def save_to_csv(candidates):
     os.makedirs("logs", exist_ok=True)
 
     file_path = "logs/daily_candidates.csv"
+    today = datetime.now().strftime("%Y-%m-%d")
+
+    existing_keys = set()
+
+    if os.path.isfile(file_path):
+        with open(file_path, mode="r", newline="", encoding="utf-8-sig") as file:
+            reader = csv.DictReader(file)
+            for row in reader:
+                existing_keys.add((row["date"], row["ticker"]))
+
     file_exists = os.path.isfile(file_path)
 
     with open(file_path, mode="a", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
 
-        if not file_exists:
+        if not file_exists or os.path.getsize(file_path) == 0:
             writer.writerow([
                 "date",
                 "ticker",
@@ -222,9 +232,16 @@ def save_to_csv(candidates):
                 "label"
             ])
 
+        saved_count = 0
+
         for stock in candidates:
+            key = (today, stock["ticker"])
+
+            if key in existing_keys:
+                continue
+
             writer.writerow([
-                datetime.now().strftime("%Y-%m-%d"),
+                today,
                 stock["ticker"],
                 stock["sector"],
                 stock["change"],
@@ -233,6 +250,10 @@ def save_to_csv(candidates):
                 stock["score"],
                 stock["label"]
             ])
+
+            saved_count += 1
+
+    print(f"\nCSV 신규 저장 {saved_count}건 → logs/daily_candidates.csv")
 
 
 def build_telegram_report(candidates):
@@ -290,7 +311,6 @@ def main():
         )
 
     save_to_csv(candidates)
-    print("\nCSV 저장 완료 → logs/daily_candidates.csv")
 
     telegram_message = build_telegram_report(candidates)
     if telegram_message:
