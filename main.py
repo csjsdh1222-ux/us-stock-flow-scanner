@@ -1,7 +1,14 @@
 import csv
 import os
+import requests
 import yfinance as yf
 from datetime import datetime
+from dotenv import load_dotenv
+
+load_dotenv()
+
+TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
 
 SECTORS = {
     "Technology": "XLK",
@@ -20,6 +27,32 @@ SECTOR_STOCKS = {
     "Healthcare": ["LLY", "UNH", "JNJ", "MRK"],
     "Consumer": ["AMZN", "TSLA", "HD", "MCD", "NKE"],
 }
+
+
+def send_telegram_message(message):
+    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
+        print("Telegram 설정 없음: .env에 TELEGRAM_BOT_TOKEN, TELEGRAM_CHAT_ID를 넣으세요.")
+        return
+
+    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+
+    try:
+        response = requests.post(
+            url,
+            data={
+                "chat_id": TELEGRAM_CHAT_ID,
+                "text": message,
+            },
+            timeout=30,
+        )
+
+        if response.status_code == 200:
+            print("Telegram 알림 전송 완료")
+        else:
+            print(f"Telegram 전송 실패: {response.status_code} / {response.text}")
+
+    except Exception as e:
+        print(f"Telegram 전송 오류: {e}")
 
 
 def get_sector_performance():
@@ -202,6 +235,31 @@ def save_to_csv(candidates):
             ])
 
 
+def build_telegram_report(candidates):
+    strong_candidates = [s for s in candidates if s["score"] >= 80]
+
+    if not strong_candidates:
+        return None
+
+    lines = []
+    lines.append("🔥 미국주식 수급 강력 후보 발생")
+    lines.append(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
+    lines.append("")
+
+    for stock in strong_candidates:
+        lines.append(
+            f"{stock['ticker']} | {stock['sector']} | "
+            f"Change {stock['change']}% | "
+            f"Volume {stock['volume_ratio']}x | "
+            f"Score {stock['score']} | {stock['label']}"
+        )
+
+    lines.append("")
+    lines.append("※ 투자 추천이 아닌 데이터 기반 관심 후보입니다.")
+
+    return "\n".join(lines)
+
+
 def main():
     print("\n[MARKET FLOW SCANNER]")
     print("Date:", datetime.now().strftime("%Y-%m-%d"))
@@ -233,6 +291,12 @@ def main():
 
     save_to_csv(candidates)
     print("\nCSV 저장 완료 → logs/daily_candidates.csv")
+
+    telegram_message = build_telegram_report(candidates)
+    if telegram_message:
+        send_telegram_message(telegram_message)
+    else:
+        print("Telegram 알림 대상 없음: 강력 후보 없음")
 
 
 if __name__ == "__main__":
