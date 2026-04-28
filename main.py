@@ -1,14 +1,16 @@
+import yfinance as yf
+import requests
 import csv
 import os
-import requests
-import yfinance as yf
 from datetime import datetime
 from dotenv import load_dotenv
 
 load_dotenv()
 
-TELEGRAM_BOT_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
+TELEGRAM_TOKEN = os.getenv("TELEGRAM_BOT_TOKEN", "")
 TELEGRAM_CHAT_ID = os.getenv("TELEGRAM_CHAT_ID", "")
+
+CSV_FILE = "logs/daily_candidates.csv"
 
 SECTORS = {
     "Technology": "XLK",
@@ -16,43 +18,31 @@ SECTORS = {
     "Energy": "XLE",
     "Financials": "XLF",
     "Healthcare": "XLV",
-    "Consumer": "XLY",
+    "Consumer": "XLY"
 }
 
-SECTOR_STOCKS = {
-    "Technology": ["NVDA", "MSFT", "AAPL", "AMD", "AVGO", "ORCL"],
-    "Communication": ["META", "GOOGL", "NFLX", "DIS"],
-    "Energy": ["XOM", "CVX", "COP"],
-    "Financials": ["JPM", "BAC", "GS", "MS", "WFC"],
-    "Healthcare": ["LLY", "UNH", "JNJ", "MRK"],
-    "Consumer": ["AMZN", "TSLA", "HD", "MCD", "NKE"],
+STOCKS = {
+    "Technology": ["NVDA", "AMD", "MSFT"],
+    "Communication": ["GOOGL", "META"],
+    "Financials": ["JPM", "WFC"],
+    "Energy": ["XOM", "CVX"],
+    "Healthcare": ["JNJ", "PFE"],
+    "Consumer": ["AMZN", "TSLA"]
 }
 
 
-def send_telegram_message(message):
-    if not TELEGRAM_BOT_TOKEN or not TELEGRAM_CHAT_ID:
-        print("Telegram 설정 없음: .env 확인 필요")
+def send_telegram(msg):
+    if not TELEGRAM_TOKEN or not TELEGRAM_CHAT_ID:
         return
 
-    url = f"https://api.telegram.org/bot{TELEGRAM_BOT_TOKEN}/sendMessage"
+    url = f"https://api.telegram.org/bot{TELEGRAM_TOKEN}/sendMessage"
 
-    try:
-        response = requests.post(
-            url,
-            data={
-                "chat_id": TELEGRAM_CHAT_ID,
-                "text": message,
-            },
-            timeout=30,
-        )
+    data = {
+        "chat_id": TELEGRAM_CHAT_ID,
+        "text": msg
+    }
 
-        if response.status_code == 200:
-            print("Telegram 알림 전송 완료")
-        else:
-            print(f"Telegram 전송 실패: {response.status_code} / {response.text}")
-
-    except Exception as e:
-        print(f"Telegram 전송 오류: {e}")
+    requests.post(url, data=data, timeout=10)
 
 
 def get_sector_performance():
@@ -60,225 +50,99 @@ def get_sector_performance():
 
     for name, ticker in SECTORS.items():
         try:
-            data = yf.Ticker(ticker).history(period="5d")
+            data = yf.Ticker(ticker).history(period="2d")
 
-            if data.empty or len(data) < 2:
+            if len(data) < 2:
                 continue
 
-            latest_close = data["Close"].iloc[-1]
-            previous_close = data["Close"].iloc[-2]
-            change = (latest_close - previous_close) / previous_close * 100
+            change = (data["Close"].iloc[-1] - data["Close"].iloc[-2]) / data["Close"].iloc[-2] * 100
 
             results.append({
                 "sector": name,
-                "ticker": ticker,
                 "change": round(change, 2)
             })
 
-        except Exception as e:
-            print(f"Error fetching sector {name}: {e}")
+        except:
+            continue
 
     return sorted(results, key=lambda x: x["change"], reverse=True)
 
 
-def get_stock_data(ticker, sector, sector_change):
+def get_stock_data(ticker):
     try:
-        stock = yf.Ticker(ticker)
-        data = stock.history(period="30d")
+        data = yf.Ticker(ticker)
+        hist = data.history(period="5d")
 
-        if data.empty or len(data) < 2:
+        if len(hist) < 2:
             return None
 
-        latest_close = data["Close"].iloc[-1]
-        previous_close = data["Close"].iloc[-2]
-        change = (latest_close - previous_close) / previous_close * 100
+        change = (hist["Close"].iloc[-1] - hist["Close"].iloc[-2]) / hist["Close"].iloc[-2] * 100
+        volume_ratio = hist["Volume"].iloc[-1] / hist["Volume"].mean()
 
-        latest_volume = data["Volume"].iloc[-1]
-        avg_volume = data["Volume"].tail(20).mean()
-        volume_ratio = latest_volume / avg_volume if avg_volume != 0 else 0
-
-        info = stock.info
-        market_cap = info.get("marketCap", 0)
+        market_cap = data.info.get("marketCap", 0)
 
         return {
-            "ticker": ticker,
-            "sector": sector,
             "change": round(change, 2),
             "volume_ratio": round(volume_ratio, 2),
-            "market_cap": market_cap,
-            "sector_change": sector_change,
+            "market_cap": market_cap
         }
 
-    except Exception as e:
-        print(f"Error fetching stock {ticker}: {e}")
+    except:
         return None
 
 
-def score_stock(stock):
+def score_stock(data):
     score = 0
 
-    if stock["change"] >= 5:
+    if data["change"] > 3:
         score += 40
-    elif stock["change"] >= 3:
+    if data["volume_ratio"] > 1.2:
         score += 30
-    elif stock["change"] >= 2:
-        score += 20
-    elif stock["change"] >= 1:
+    if data["market_cap"] > 10_000_000_000:
         score += 10
 
-    if stock["volume_ratio"] >= 2:
-        score += 30
-    elif stock["volume_ratio"] >= 1.5:
-        score += 25
-    elif stock["volume_ratio"] >= 1.2:
-        score += 20
-    elif stock["volume_ratio"] >= 1:
-        score += 10
-
-    if stock["sector_change"] >= 1:
-        score += 25
-    elif stock["sector_change"] >= 0.5:
-        score += 15
-    elif stock["sector_change"] >= 0.2:
-        score += 10
-
-    if stock["market_cap"] >= 500_000_000_000:
-        score += 20
-    elif stock["market_cap"] >= 100_000_000_000:
-        score += 15
-    elif stock["market_cap"] >= 10_000_000_000:
-        score += 10
-
-    return min(score, 100)
+    return score
 
 
-def get_label(score):
-    if score >= 80:
-        return "🔥 강력 후보"
-    elif score >= 60:
-        return "관심 후보"
-    elif score >= 40:
-        return "관찰"
-    else:
-        return "보류"
-
-
-def scan_leading_stocks(top_sectors):
-    candidates = []
-
-    for sector_data in top_sectors:
-        sector = sector_data["sector"]
-        sector_change = sector_data["change"]
-
-        for ticker in SECTOR_STOCKS.get(sector, []):
-            stock = get_stock_data(ticker, sector, sector_change)
-
-            if stock is None:
-                continue
-
-            if stock["change"] < 1:
-                continue
-
-            if stock["volume_ratio"] < 1:
-                continue
-
-            if stock["market_cap"] < 2_000_000_000:
-                continue
-
-            stock["score"] = score_stock(stock)
-            stock["label"] = get_label(stock["score"])
-
-            candidates.append(stock)
-
-    return sorted(candidates, key=lambda x: x["score"], reverse=True)
-
-
-def format_market_cap(value):
-    if value >= 1_000_000_000_000:
-        return f"{value / 1_000_000_000_000:.2f}T"
-    elif value >= 1_000_000_000:
-        return f"{value / 1_000_000_000:.2f}B"
-    return str(value)
-
-
-def save_to_csv(candidates):
-    os.makedirs("logs", exist_ok=True)
-
-    file_path = "logs/daily_candidates.csv"
-    today = datetime.now().strftime("%Y-%m-%d")
-
+def save_to_csv(rows):
+    file_exists = os.path.isfile(CSV_FILE)
     existing_keys = set()
 
-    if os.path.isfile(file_path):
-        with open(file_path, mode="r", newline="", encoding="utf-8-sig") as file:
-            reader = csv.DictReader(file)
-            for row in reader:
-                existing_keys.add((row["date"], row["ticker"]))
+    if file_exists:
+        with open(CSV_FILE, mode="r", encoding="utf-8-sig") as f:
+            reader = csv.DictReader(f)
+            for r in reader:
+                existing_keys.add((r["date"], r["ticker"]))
 
-    file_exists = os.path.isfile(file_path)
+    os.makedirs("logs", exist_ok=True)
 
-    with open(file_path, mode="a", newline="", encoding="utf-8-sig") as file:
+    new_count = 0
+
+    with open(CSV_FILE, mode="a", newline="", encoding="utf-8-sig") as file:
         writer = csv.writer(file)
 
-        if not file_exists or os.path.getsize(file_path) == 0:
-            writer.writerow([
-                "date",
-                "ticker",
-                "sector",
-                "change",
-                "volume_ratio",
-                "market_cap",
-                "score",
-                "label"
-            ])
+        if not file_exists:
+            writer.writerow(["date", "ticker", "sector", "change", "volume_ratio", "market_cap", "score", "label"])
 
-        saved_count = 0
-
-        for stock in candidates:
-            key = (today, stock["ticker"])
+        for row in rows:
+            key = (row["date"], row["ticker"])
 
             if key in existing_keys:
                 continue
 
             writer.writerow([
-                today,
-                stock["ticker"],
-                stock["sector"],
-                stock["change"],
-                stock["volume_ratio"],
-                stock["market_cap"],
-                stock["score"],
-                stock["label"]
+                row["date"],
+                row["ticker"],
+                row["sector"],
+                row["change"],
+                row["volume_ratio"],
+                row["market_cap"],
+                row["score"],
+                row["label"]
             ])
+            new_count += 1
 
-            saved_count += 1
-
-    print(f"\nCSV 신규 저장 {saved_count}건 → logs/daily_candidates.csv")
-
-
-def build_telegram_report(candidates):
-    strong_candidates = [s for s in candidates if s["score"] >= 80]
-
-    if not strong_candidates:
-        return None
-
-    lines = []
-    lines.append("🔥 미국주식 수급 강력 후보 발생")
-    lines.append(f"Date: {datetime.now().strftime('%Y-%m-%d')}")
-    lines.append("")
-
-    for stock in strong_candidates:
-        lines.append(
-            f"{stock['ticker']} | {stock['sector']} | "
-            f"Change {stock['change']}% | "
-            f"Volume {stock['volume_ratio']}x | "
-            f"Score {stock['score']} | {stock['label']}"
-        )
-
-    lines.append("")
-    lines.append("※ 투자 추천이 아닌 데이터 기반 관심 후보입니다.")
-
-    return "\n".join(lines)
+    print(f"CSV 신규 저장 {new_count}건 → {CSV_FILE}")
 
 
 def main():
@@ -289,34 +153,57 @@ def main():
 
     print("\nTop Sectors:")
     for i, s in enumerate(sectors[:3], 1):
-        print(f"{i}. {s['sector']} ({s['ticker']}) {s['change']}%")
+        print(f"{i}. {s['sector']} {s['change']}%")
+
+    candidates = []
 
     print("\nScanning leading stocks...")
-    candidates = scan_leading_stocks(sectors[:3])
+
+    for sector in sectors[:3]:
+        name = sector["sector"]
+
+        for ticker in STOCKS.get(name, []):
+            data = get_stock_data(ticker)
+
+            if not data:
+                continue
+
+            score = score_stock(data)
+
+            label = "관찰"
+            if score >= 80:
+                label = "🔥 강력 후보"
+            elif score >= 60:
+                label = "관심 후보"
+
+            if score >= 50:
+                candidates.append({
+                    "date": datetime.now().strftime("%Y-%m-%d"),
+                    "ticker": ticker,
+                    "sector": name,
+                    "change": data["change"],
+                    "volume_ratio": data["volume_ratio"],
+                    "market_cap": data["market_cap"],
+                    "score": score,
+                    "label": label
+                })
 
     print("\nCandidates:")
-    if not candidates:
-        print("No candidates found today.")
-        return
+    msg = "📊 오늘의 후보 종목\n"
 
-    for stock in candidates:
-        print(
-            f"{stock['ticker']} | "
-            f"{stock['sector']} | "
-            f"Change {stock['change']}% | "
-            f"Volume {stock['volume_ratio']}x | "
-            f"Cap {format_market_cap(stock['market_cap'])} | "
-            f"Score {stock['score']} | "
-            f"{stock['label']}"
-        )
+    for c in candidates:
+        line = f"{c['ticker']} | {c['sector']} | Score {c['score']} | {c['label']}"
+        print(line)
+        msg += line + "\n"
 
     save_to_csv(candidates)
 
-    telegram_message = build_telegram_report(candidates)
-    if telegram_message:
-        send_telegram_message(telegram_message)
-    else:
-        print("Telegram 알림 대상 없음: 강력 후보 없음")
+    # 🔥 Telegram 안정화 (핵심)
+    try:
+        send_telegram(msg)
+        print("Telegram 전송 완료")
+    except Exception as e:
+        print(f"Telegram 실패 → 무시: {e}")
 
 
 if __name__ == "__main__":
